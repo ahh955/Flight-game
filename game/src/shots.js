@@ -25,8 +25,8 @@ function placeCamera(G, view, back, up) {
     G.cam.yaw = p.yaw; G.cam.pitch = p.pitch; G.cam.roll = p.roll;
     return;
   }
-  const b = back === undefined ? 40 : back;
-  const upv = up === undefined ? 13 : up;
+  const b = back === undefined ? 44 : back;
+  const upv = up === undefined ? 10 : up;
   G.cam.pos = {
     x: p.pos.x - f[0] * b + u[0] * upv,
     y: p.pos.y - f[1] * b + u[1] * upv,
@@ -75,13 +75,18 @@ export function stageShot(n, G) {
     G.state = 'flying';
     placeCamera(G, 'chase');
   } else if (n === 3) {
-    // Sunset DOGFIGHT: two friendly planes (the player + a blue-winged
-    // wingman in formation) trading fire with two enemy fighters,
-    // halfway through the course. Fixed values, no randomness — the
-    // frame is frozen while G.shot is set, so the tracers stay put.
+    // Sunset DOGFIGHT in front of Gunung Api: two friendly planes
+    // (the player + a blue-winged wingman in formation) trading fire
+    // with two enemy fighters, the volcano's smoking cone and its
+    // lava-lit flank behind them, sea and sunset sky around it.
+    // Fixed values, no randomness — the frame is frozen while G.shot
+    // is set, so the tracers stay put. Staged a good way off the
+    // volcano (about 1100 units) so the fight reads against the
+    // mountain instead of getting lost inside it.
+    const yaw = -1.79; // facing north-west, toward the volcano
     G.plane = newPlane();
-    G.plane.pos = { x: -350, y: 385, z: -1250 };
-    G.plane.yaw = 1.34; G.plane.pitch = 0.05; G.plane.roll = -0.25;
+    G.plane.pos = { x: -650, y: 360, z: -950 };
+    G.plane.yaw = yaw; G.plane.pitch = 0.05; G.plane.roll = -0.25;
     G.plane.speed = 66; G.plane.throttle = 0.72; G.plane.onGround = false;
     G.plane.propAngle = 5.1;
     for (let i = 0; i < 4; i++) RINGS[i].passed = true;
@@ -90,25 +95,26 @@ export function stageShot(n, G) {
     G.time = 18.3;
     G.state = 'flying';
     // Combat state, staged explicitly. Enemies close enough to read
-    // (dark fuselage + red fin + HP bar), the wingman fully in frame
-    // right-behind the player, tracers strung between the two sides.
-    const fx = Math.sin(1.34), fz = -Math.cos(1.34); // player forward
-    const rx = Math.cos(1.34), rz = Math.sin(1.34); // player right
-    const e1 = { x: -350 + fx * 180 - rx * 30, y: 395, z: -1250 + fz * 180 - rz * 30 };
-    const e2 = { x: -350 + fx * 260 + rx * 70, y: 415, z: -1250 + fz * 260 + rz * 70 };
+    // (dark fuselage + red fin + HP bar) on the volcano's flank, the
+    // wingman fully in frame right-behind the player, tracers strung
+    // between the two sides.
+    const fx = Math.sin(yaw), fz = -Math.cos(yaw); // player forward
+    const rx = Math.cos(yaw), rz = Math.sin(yaw); // player right
+    const e1 = { x: -650 + fx * 180 - rx * 30, y: 375, z: -950 + fz * 180 - rz * 30 };
+    const e2 = { x: -650 + fx * 260 + rx * 70, y: 395, z: -950 + fz * 260 + rz * 70 };
     G.combat.enemiesSpawned = true;
     G.combat.playerHp = 100;
     G.combat.enemies = [
-      { pos: e1, yaw: 1.34 + Math.PI, pitch: 0, roll: 0.2, speed: 60, throttle: 0.7, hp: 55, alive: true, fireCd: 0.4, evadeT: 0, propAngle: 1.2 },
-      { pos: e2, yaw: 1.34 + Math.PI, pitch: 0, roll: 0.3, speed: 60, throttle: 0.7, hp: 100, alive: true, fireCd: 0.9, evadeT: 0, propAngle: 3.0 },
+      { pos: e1, yaw: yaw + Math.PI, pitch: 0, roll: 0.2, speed: 60, throttle: 0.7, hp: 55, alive: true, fireCd: 0.4, evadeT: 0, propAngle: 1.2 },
+      { pos: e2, yaw: yaw + Math.PI, pitch: 0, roll: 0.3, speed: 60, throttle: 0.7, hp: 100, alive: true, fireCd: 0.9, evadeT: 0, propAngle: 3.0 },
     ];
     G.combat.wingman = {
-      pos: { x: -350 + rx * 30, y: 385, z: -1250 + rz * 30 },
-      yaw: 1.34, pitch: 0.05, roll: -0.25, speed: 66, throttle: 0.72, propAngle: 5.1, fireCd: 0.1,
+      pos: { x: -650 + rx * 30, y: 365, z: -950 + rz * 30 },
+      yaw, pitch: 0.05, roll: -0.25, speed: 66, throttle: 0.72, propAngle: 5.1, fireCd: 0.1,
     };
     // Tracers already in flight: the player and the wingman firing at
     // enemy 1, and one enemy round heading for the player.
-    const nose = { x: -350 + fx * 8, y: 385, z: -1250 + fz * 8 };
+    const nose = { x: -650 + fx * 8, y: 360, z: -950 + fz * 8 };
     const wNose = {
       x: G.combat.wingman.pos.x + fx * 8,
       y: G.combat.wingman.pos.y,
@@ -121,7 +127,7 @@ export function stageShot(n, G) {
     };
     const d1 = dirTo(nose, e1);
     const dw = dirTo(wNose, e1);
-    const de = dirTo(e1, { x: -350, y: 385, z: -1250 });
+    const de = dirTo(e1, { x: -650, y: 360, z: -950 });
     const mkBullet = (fromPos, dir, t, from, damage) => ({
       pos: { x: fromPos.x + dir[0] * t, y: fromPos.y + dir[1] * t, z: fromPos.z + dir[2] * t },
       vel: { x: dir[0] * 320, y: dir[1] * 320, z: dir[2] * 320 },
@@ -135,9 +141,9 @@ export function stageShot(n, G) {
       mkBullet(wNose, dw, 60, 'wingman', 15),
       mkBullet(e1, de, 90, 'enemy', 8),
     ];
-    // Pulled-back chase camera so the wingman (right-back) and the
-    // enemy ahead share the frame.
-    placeCamera(G, 'chase', 60, 20);
+    // Pulled-back chase camera so the wingman (right-back), the
+    // enemy ahead and the volcano behind them share the frame.
+    placeCamera(G, 'chase', 70, 22);
   } else {
     // Landing / final score: parked on the runway, mission complete.
     G.plane = newPlane();

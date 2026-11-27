@@ -3,19 +3,56 @@
 // islands, open turquoise sea, and 8 glowing target rings strung
 // between them. Everything is deterministic (same seed every load).
 
-import { clamp, lerp, makeNoise, mulberry32, smooth, TAU } from './util.js';
+import { clamp, lerp, makeNoise, mulberry32, smooth, TAU, wrapAngle } from './util.js';
 
 export const WORLD_SIZE = 6000; // world spans -3000..3000 on x and z
 export const SEA_LEVEL = 0;
 
 // Island bumps: [x, z, radius, height]. The runway sits on island 0.
-const ISLANDS = [
+// Exported so the renderer can paint shallow water around each shore.
+export const ISLANDS = [
   { x: 0, z: 900, r: 1150, h: 165 },     // home island (runway)
-  { x: -1750, z: -700, r: 800, h: 210 }, // twin-peak island, north-west
+  { x: -1750, z: -700, r: 850, h: 300 }, // GUNUNG API — the active volcano
   { x: 1700, z: -950, r: 720, h: 120 },  // palm island, north-east
   { x: 400, z: -2100, r: 560, h: 90 },   // far north islet
   { x: -2400, z: 1600, r: 520, h: 70 },  // far west islet
 ];
+
+// The volcano ("Gunung Api"): island 1 is an active volcano. Its
+// summit is a glowing crater; three lava flows run down its flanks
+// and a smoke column leans away on the wind. Ring 3 hangs right
+// above the crater, so the loop flies over the fire.
+export const VOLCANO = {
+  x: -1750, z: -700, r: 850, summit: 300,
+  craterR: 150, craterFloor: 215,
+};
+// Lava flows leave the crater at these azimuths (radians, 0 = +x).
+export const LAVA_AZIMUTHS = [0.6, 2.3, 4.1];
+
+// Volcanic character of a point: crater (1 inside the glowing bowl),
+// lava (1 in the middle of a flow), basalt (1 on the volcano's dark
+// flanks). All 0..1, all 0 away from the volcano.
+export function volcanoAt(x, z) {
+  const dx = x - VOLCANO.x, dz = z - VOLCANO.z;
+  const d = Math.hypot(dx, dz);
+  if (d > VOLCANO.r + 120) return { crater: 0, lava: 0, basalt: 0 };
+  const crater = d < VOLCANO.craterR ? 1 - smooth(d / VOLCANO.craterR) : 0;
+  let lava = 0;
+  if (d > 90 && d < 760) {
+    const az = Math.atan2(dz, dx);
+    for (const a0 of LAVA_AZIMUTHS) {
+      const da = Math.abs(wrapAngle(az - a0));
+      const halfW = 0.09 + (d / 760) * 0.10;
+      if (da < halfW) {
+        const across = 1 - da / halfW;
+        const along = 1 - (d - 90) / 670;
+        lava = Math.max(lava, across * across * clamp(along, 0, 1));
+      }
+    }
+  }
+  const basalt = clamp(1 - smooth((d - VOLCANO.r * 0.55) / (VOLCANO.r * 0.45)), 0, 1);
+  return { crater, lava, basalt };
+}
 
 const noise = makeNoise(20261126);
 
@@ -36,6 +73,29 @@ export function terrainHeight(x, z) {
     // Hills only on land: more noise where the island is higher.
     const n = noise(x * 0.0016 + 31, z * 0.0016 + 17);
     h += (n - 0.42) * 95 * smooth(h / 60);
+  }
+  // The volcano's crater: a bowl carved into the summit, its floor
+  // glowing with lava. Blends from the rim (natural height) down to
+  // the crater floor at the centre; ring 3 hangs just above it.
+  {
+    const dx = x - VOLCANO.x, dz = z - VOLCANO.z;
+    const d = Math.hypot(dx, dz);
+    if (d < VOLCANO.craterR) {
+      const k = smooth((VOLCANO.craterR - d) / VOLCANO.craterR);
+      h = lerp(h, VOLCANO.craterFloor, k);
+    }
+  }
+  // The crater rim: cap the terrain at 292 in a ring around the bowl
+  // (radius 130..300), so the rim reads as a flat crater lip and a
+  // plane threading ring 3 (y 330) never meets a noise spike on the
+  // way in. Below the rim the flanks keep their rugged noise.
+  {
+    const dx = x - VOLCANO.x, dz = z - VOLCANO.z;
+    const d = Math.hypot(dx, dz);
+    if (d >= 130 && d < 300) {
+      const k = smooth((300 - d) / 170);
+      h = lerp(h, Math.min(h, 292), k);
+    }
   }
   // Departure valley: a wide flat corridor down the home island along
   // the runway centreline, so takeoff and landing never meet a
@@ -92,7 +152,7 @@ function buildRings() {
   const defs = [
     { x: 0, z: 480, y: 120, r: 34 },
     { x: -700, z: -150, y: 200, r: 34 },
-    { x: -1750, z: -700, y: 300, r: 36 },
+    { x: -1750, z: -700, y: 330, r: 36 },
     { x: -900, z: -1400, y: 200, r: 34 },
     { x: 700, z: -1500, y: 190, r: 34 },
     { x: 1700, z: -950, y: 230, r: 36 },
@@ -137,21 +197,26 @@ export const CLOUDS = buildClouds();
 
 // Time of day: t = hours 0..24. Returns sky colours, sun direction
 // and fog colour. Three moods: dawn (6.5), day (12), sunset (18.3).
+// cloudTop/cloudBot tint the clouds with the sun's colour; haze is
+// the warm band that sits on the horizon at low sun.
 export function daylight(t) {
   const day = {
-    skyTop: [64, 138, 214], skyMid: [135, 196, 235], skyBot: [214, 235, 245],
-    sun: [255, 244, 214], fog: [198, 222, 236], sunDir: [0.45, 0.62, 0.55],
+    skyTop: [38, 110, 196], skyMid: [110, 178, 228], skyBot: [206, 232, 244],
+    sun: [255, 244, 214], fog: [196, 220, 236], sunDir: [0.45, 0.62, 0.55],
     ambient: 1.0, sunI: 1.0,
+    cloudTop: [255, 255, 255], cloudBot: [188, 208, 226], haze: [214, 234, 244],
   };
   const dawn = {
-    skyTop: [58, 74, 138], skyMid: [226, 138, 108], skyBot: [255, 196, 140],
+    skyTop: [46, 58, 124], skyMid: [214, 128, 110], skyBot: [255, 198, 142],
     sun: [255, 196, 120], fog: [232, 178, 150], sunDir: [0.85, 0.18, 0.3],
     ambient: 0.82, sunI: 0.9,
+    cloudTop: [255, 232, 214], cloudBot: [196, 148, 156], haze: [255, 186, 132],
   };
   const sunset = {
-    skyTop: [42, 52, 110], skyMid: [196, 96, 84], skyBot: [255, 158, 92],
+    skyTop: [30, 34, 96], skyMid: [190, 88, 80], skyBot: [255, 156, 90],
     sun: [255, 150, 70], fog: [238, 150, 110], sunDir: [-0.8, 0.14, -0.42],
     ambient: 0.8, sunI: 0.9,
+    cloudTop: [255, 210, 176], cloudBot: [172, 106, 126], haze: [255, 148, 88],
   };
   const mix = (a, b, k) => ({
     skyTop: a.skyTop.map((v, i) => Math.round(lerp(v, b.skyTop[i], k))),
@@ -162,20 +227,38 @@ export function daylight(t) {
     sunDir: a.sunDir.map((v, i) => lerp(v, b.sunDir[i], k)),
     ambient: lerp(a.ambient, b.ambient, k),
     sunI: lerp(a.sunI, b.sunI, k),
+    cloudTop: a.cloudTop.map((v, i) => Math.round(lerp(v, b.cloudTop[i], k))),
+    cloudBot: a.cloudBot.map((v, i) => Math.round(lerp(v, b.cloudBot[i], k))),
+    haze: a.haze.map((v, i) => Math.round(lerp(v, b.haze[i], k))),
   });
   if (t < 9) return mix(dawn, day, smooth((t - 6.5) / 2.5));
   if (t < 16.5) return day;
   return mix(day, sunset, smooth((t - 16.5) / 1.8));
 }
 
-// Sea colour shifts with the light too.
+// Sea colour shifts with the light too. Deeper blue-green near the
+// camera, paler toward the horizon; `shallow` is the pale turquoise
+// of water over sand near a shore.
 export function seaColors(light) {
   const k = light.ambient;
   return {
-    near: [16 + Math.round(30 * (1 - k)), 120, 150],
-    far: [30, 160, 185],
+    near: [12 + Math.round(22 * (1 - k)), 100, 132],
+    far: [22, 130, 165],
+    shallow: [64, 196, 190],
     sparkle: light.sun,
   };
+}
+
+// How shallow the sea is at (x, z): 1 right at a shoreline, fading
+// to 0 about 260 units out. Used to tint the water pale turquoise
+// over the sand shelf around each island.
+export function seaShallow(x, z) {
+  let best = 0;
+  for (const isl of ISLANDS) {
+    const d = Math.hypot(x - isl.x, z - isl.z) - isl.r;
+    if (d < 260) best = Math.max(best, 1 - smooth((d + 40) / 300));
+  }
+  return best;
 }
 
 export { TAU };

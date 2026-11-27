@@ -14,6 +14,13 @@ function gauge(ctx, x, y, r, value, max, label, unit, accent) {
   // Face.
   ctx.fillStyle = 'rgba(12,16,24,0.82)';
   ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+  // Soft glass highlight, top-left, so the face reads as a lit
+  // instrument instead of a painted circle.
+  const hg = ctx.createRadialGradient(-r * 0.35, -r * 0.4, 2, -r * 0.35, -r * 0.4, r * 0.9);
+  hg.addColorStop(0, 'rgba(255,255,255,0.10)');
+  hg.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = hg;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke();
@@ -193,24 +200,44 @@ export function drawHUD(ctx, w, h, G) {
   // Cockpit frame FIRST: the dashboard is the panel the instruments
   // sit on, so the gauges must be drawn after it, not under it.
   if (G.view === 'cockpit') {
-    ctx.fillStyle = 'rgba(16,18,24,0.95)';
-    // Dashboard.
+    // Dashboard: a brushed dark panel with a soft top highlight,
+    // rivets along its curved edge, and a glow strip.
+    const pg = ctx.createLinearGradient(0, h - 150, 0, h);
+    pg.addColorStop(0, 'rgba(26,30,40,0.97)');
+    pg.addColorStop(1, 'rgba(10,12,18,0.95)');
+    ctx.fillStyle = pg;
     ctx.beginPath();
     ctx.moveTo(0, h); ctx.lineTo(0, h - 108);
     ctx.quadraticCurveTo(w / 2, h - 150, w, h - 108);
     ctx.lineTo(w, h); ctx.closePath(); ctx.fill();
-    // Canopy pillars.
+    // Rivets along the panel's curved top edge.
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    for (let i = 0; i <= 10; i++) {
+      const t = i / 10;
+      const rx = t * w;
+      const ry = (1 - t) * (1 - t) * (h - 108) + 2 * (1 - t) * t * (h - 150) + t * t * (h - 108);
+      ctx.beginPath(); ctx.arc(rx, ry + 8, 2, 0, TAU); ctx.fill();
+    }
+    // Canopy pillars with a lit inner edge.
+    ctx.fillStyle = 'rgba(16,18,24,0.95)';
     ctx.fillRect(0, 0, 26, h * 0.55);
     ctx.fillRect(w - 26, 0, 26, h * 0.55);
     ctx.fillRect(0, 0, w, 18);
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    ctx.fillRect(26, 18, 3, h * 0.55 - 18);
+    ctx.fillRect(w - 29, 18, 3, h * 0.55 - 18);
     // Dashboard glow strip.
     ctx.fillStyle = 'rgba(255,211,77,0.25)';
     ctx.fillRect(0, h - 112, w, 3);
-    // Nose tip.
-    ctx.fillStyle = '#e85a46';
+    // Nose tip: shaded cone with a bright centre ridge.
+    ctx.fillStyle = '#c94a38';
     ctx.beginPath();
     ctx.moveTo(w / 2 - 34, h - 104); ctx.lineTo(w / 2 + 34, h - 104);
     ctx.lineTo(w / 2, h - 150); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#f0705c';
+    ctx.beginPath();
+    ctx.moveTo(w / 2 - 10, h - 104); ctx.lineTo(w / 2 + 10, h - 104);
+    ctx.lineTo(w / 2, h - 148); ctx.closePath(); ctx.fill();
   }
   // Left cluster: airspeed, altitude, attitude.
   gauge(ctx, 78, h - 84, 46, knots(p), 200, 'AIRSPEED', 'kt', '#7fd4ff');
@@ -221,33 +248,33 @@ export function drawHUD(ctx, w, h, G) {
   // Right: score, rings, kills, timer, hull.
   ctx.textAlign = 'right';
   ctx.fillStyle = 'rgba(10,14,22,0.6)';
-  ctx.fillRect(w - 208, h - 204, 188, 184);
+  ctx.fillRect(w - 208, h - 210, 188, 196);
   ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-  ctx.strokeRect(w - 208, h - 204, 188, 184);
+  ctx.strokeRect(w - 208, h - 210, 188, 196);
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 15px sans-serif';
-  ctx.fillText('SCORE', w - 32, h - 176);
+  ctx.fillText('SCORE', w - 32, h - 182);
   ctx.font = 'bold 30px monospace';
   ctx.fillStyle = '#ffd34d';
-  ctx.fillText(String(G.score), w - 32, h - 142);
+  ctx.fillText(String(G.score), w - 32, h - 148);
   ctx.font = '15px sans-serif';
   ctx.fillStyle = '#fff';
   const passed = RINGS.filter((r) => r.passed).length;
-  ctx.fillText(`RINGS  ${passed} / ${RINGS.length}`, w - 32, h - 112);
-  ctx.fillText(`MUSUH  ${G.combat ? G.combat.kills : 0} / 2`, w - 32, h - 88);
-  ctx.fillText(`TIME  ${Math.max(0, Math.ceil(G.timeLeft))}s`, w - 32, h - 64);
+  ctx.fillText(`RINGS  ${passed} / ${RINGS.length}`, w - 32, h - 118);
+  ctx.fillText(`MUSUH  ${G.combat ? G.combat.kills : 0} / 2`, w - 32, h - 94);
+  ctx.fillText(`TIME  ${Math.max(0, Math.ceil(G.timeLeft))}s`, w - 32, h - 70);
   // Hull bar (green -> amber -> red).
   const hp = G.combat ? G.combat.playerHp : 100;
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 13px sans-serif';
-  ctx.fillText(`HULL  ${Math.round(hp)}`, w - 32, h - 44);
+  ctx.fillText(`HULL  ${Math.round(hp)}`, w - 32, h - 52);
   ctx.fillStyle = 'rgba(255,255,255,0.15)';
-  ctx.fillRect(w - 190, h - 38, 152, 10);
+  ctx.fillRect(w - 190, h - 46, 152, 10);
   ctx.fillStyle = hp > 50 ? '#5adc82' : hp > 25 ? '#ffd34d' : '#ff7a5c';
-  ctx.fillRect(w - 190, h - 38, 152 * clamp(hp / 100, 0, 1), 10);
+  ctx.fillRect(w - 190, h - 46, 152 * clamp(hp / 100, 0, 1), 10);
   ctx.fillStyle = '#9fd8ff';
   ctx.font = '13px sans-serif';
-  ctx.fillText(G.view === 'cockpit' ? 'VIEW: COCKPIT [C]' : 'VIEW: CHASE [C]', w - 32, h - 24);
+  ctx.fillText(G.view === 'cockpit' ? 'VIEW: COCKPIT [C]' : 'VIEW: CHASE [C]', w - 32, h - 26);
   // Minimap top-right.
   minimap(ctx, w - 178, 62, 150, p, G.nextRing);
   // Next-ring hint.
@@ -319,7 +346,8 @@ function panel(ctx, w, h, title, lines, accent) {
 
 export function drawMenu(ctx, w, h) {
   panel(ctx, w, h, 'LANGIT BIRU', [
-    'Island Run — terbang melewati 8 ring emas di atas kepulauan biru.',
+    'Island Run — terbang melewati 8 ring emas di atas kepulauan vulkanik.',
+    'Ring 3 menggantung tepat di atas kawah Gunung Api yang menyala.',
     '',
     'W / S — throttle    ↑ / ↓ — pitch    ← / → — belok (bank)',
     'A / D — rudder    C — ganti kamera    Mouse — lihat sekitar',

@@ -5,7 +5,7 @@
 // are all drawn this way.
 
 import { clamp, css, lerp, mixColor, shade, smooth, TAU, wrapAngle } from './util.js';
-import { CLOUDS, daylight, groundHeight, onRunway, RINGS, RUNWAY, runwayHeight, seaColors, terrainHeight } from './world.js';
+import { CLOUDS, daylight, groundHeight, LAVA_AZIMUTHS, onRunway, RINGS, RUNWAY, runwayHeight, seaColors, seaShallow, terrainHeight, VOLCANO, volcanoAt } from './world.js';
 
 // ---------- camera ----------
 // Heading yaw: 0 = north (-z), PI/2 = east (+x). Pitch + = nose up.
@@ -88,22 +88,51 @@ export function makeProjector(cam, w, h, fovDeg) {
 }
 
 // ---------- terrain colours ----------
-const SAND = [232, 208, 148];
-const GRASS = [96, 168, 92];
-const GRASS2 = [126, 182, 98];
-const FOREST = [62, 128, 76];
-const ROCK = [128, 118, 106];
-const SNOW = [238, 240, 244];
+// A volcanic archipelago: black-sand beaches, mottled green slopes,
+// dark basalt on the volcano's flanks, molten lava in the flows and
+// glowing rock inside the crater bowl. terrainColor mixes by height
+// and slope, mottles the result with a per-cell noise value, then
+// layers the volcano over it — so no two patches read as one flat slab.
+const SAND = [58, 52, 46];
+const SAND2 = [76, 68, 58];
+const GRASS = [88, 148, 82];
+const GRASS2 = [112, 164, 88];
+const MEADOW = [140, 168, 96];
+const FOREST = [52, 110, 66];
+const FOREST2 = [40, 92, 58];
+const ROCK = [122, 112, 100];
+const ROCK2 = [96, 88, 82];
+const BASALT = [54, 48, 44];
+const BASALT2 = [72, 62, 54];
+const SNOW = [236, 238, 242];
 
-function terrainColor(h, slope) {
+function terrainColor(h, slope, mottle, x, z) {
   let c;
-  if (h < 5) c = SAND;
-  else if (h < 55) c = mixColor(GRASS, GRASS2, (h - 5) / 50);
-  else if (h < 105) c = mixColor(GRASS2, FOREST, (h - 55) / 50);
-  else if (h < 155) c = mixColor(FOREST, ROCK, (h - 105) / 50);
+  if (h < 4) c = mixColor(SAND, SAND2, clamp(mottle, 0, 1));
+  else if (h < 55) c = mixColor(mixColor(GRASS, GRASS2, (h - 4) / 51), MEADOW, mottle * 0.45);
+  else if (h < 105) c = mixColor(mixColor(GRASS2, FOREST, (h - 55) / 50), FOREST2, mottle * 0.5);
+  else if (h < 155) c = mixColor(mixColor(FOREST, ROCK, (h - 105) / 50), ROCK2, mottle * 0.4);
   else c = mixColor(ROCK, SNOW, smooth((h - 155) / 25));
-  if (slope < 0.72) c = mixColor(c, ROCK, 0.7); // cliffs are rock
+  if (slope < 0.72) c = mixColor(c, ROCK2, 0.7); // cliffs are rock
+  // The volcano, layered over the base colours: dark basalt flanks,
+  // molten lava glowing in the flows, hot rock inside the crater.
+  if (x !== undefined) {
+    const v = volcanoAt(x, z);
+    if (v.basalt > 0) c = mixColor(c, mixColor(BASALT, BASALT2, mottle), v.basalt * 0.85);
+    if (v.lava > 0) {
+      const hot = mixColor([255, 176, 64], [255, 96, 26], clamp(1 - v.lava, 0, 1) * 0.6);
+      c = mixColor(c, hot, v.lava);
+    }
+    if (v.crater > 0) c = mixColor(c, [255, 140, 45], v.crater * 0.9);
+  }
   return c;
+}
+
+// Deterministic per-cell jitter in 0..1, from the cell's coordinates.
+function cellJitter(ix, iz) {
+  let n = (ix * 374761393 + iz * 668265263) | 0;
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
 }
 
 // ---------- the plane model ----------
@@ -159,15 +188,19 @@ function planeTriangles(propAngle, palette) {
   }
   // Nose cap.
   tris.push({ v: [[0, 0, 7.2], ringPts(stations[0])[1], ringPts(stations[0])[0]], c: NOSE });
-  // Canopy (glass hump on top, z 1.5..4.5).
+  // Canopy (glass hump on top, z 1.5..4.5). Glass catches the sun
+  // harder than paint (spec), and a bright streak along its ridge
+  // reads as sky reflected in the glass.
   const canopy = [
     [0, 2.35, 4.6], [0.85, 1.75, 4.4], [0.85, 1.75, 1.6], [0, 2.5, 1.4],
     [-0.85, 1.75, 4.4], [-0.85, 1.75, 1.6],
   ];
-  tris.push({ v: [canopy[0], canopy[1], canopy[3]], c: GLASS });
-  tris.push({ v: [canopy[1], canopy[2], canopy[3]], c: GLASS });
-  tris.push({ v: [canopy[0], canopy[3], canopy[4]], c: GLASS });
-  tris.push({ v: [canopy[4], canopy[3], canopy[5]], c: GLASS });
+  tris.push({ v: [canopy[0], canopy[1], canopy[3]], c: GLASS, spec: 1.8 });
+  tris.push({ v: [canopy[1], canopy[2], canopy[3]], c: GLASS, spec: 1.8 });
+  tris.push({ v: [canopy[0], canopy[3], canopy[4]], c: GLASS, spec: 1.8 });
+  tris.push({ v: [canopy[4], canopy[3], canopy[5]], c: GLASS, spec: 1.8 });
+  tris.push({ v: [[-0.12, 2.46, 4.3], [0.12, 2.46, 4.3], [0.12, 2.59, 1.8]], c: [205, 228, 245], glow: true });
+  tris.push({ v: [[-0.12, 2.46, 4.3], [0.12, 2.59, 1.8], [-0.12, 2.59, 1.8]], c: [205, 228, 245], glow: true });
 
   // Main wings (flat, slightly swept): top cream, edge coral.
   function wingBox(cx, z0, z1, span, thick, top, side) {
@@ -189,6 +222,12 @@ function planeTriangles(propAngle, palette) {
   tris.push({ v: [[-0.14, 1.0, -7.0], [0.14, 3.4, -5.2], [-0.14, 3.4, -5.2]], c: GOLD });
   tris.push({ v: [[-0.14, 1.0, -5.2], [0.14, 1.0, -5.2], [0.14, 3.4, -5.2]], c: CORAL });
   tris.push({ v: [[-0.14, 1.0, -5.2], [0.14, 3.4, -5.2], [-0.14, 3.4, -5.2]], c: CORAL });
+
+  // Wing panel seam: a thin dark line across the wing tops, just
+  // above the surface, so the wing reads as built panels, not one
+  // flat sheet.
+  tris.push({ v: [[-6.5, 0.22, 1.0], [6.5, 0.22, 1.0], [6.5, 0.22, 1.18]], c: [58, 58, 66], glow: true });
+  tris.push({ v: [[-6.5, 0.22, 1.0], [6.5, 0.22, 1.18], [-6.5, 0.22, 1.18]], c: [58, 58, 66], glow: true });
 
   // Propeller: spinner + two blades (rotating).
   tris.push({ v: [[0, 0.5, 7.6], [0.5, 0, 7.6], [0, -0.5, 7.6]], c: NOSE });
@@ -272,26 +311,38 @@ export function renderScene(S) {
   const sunLen = Math.hypot(sunDir[0], sunDir[1], sunDir[2]);
   const sunN = [sunDir[0] / sunLen, sunDir[1] / sunLen, sunDir[2] / sunLen];
 
-  // Sky gradient.
+  // Sky gradient: deep zenith, mid blue, then a warm haze band
+  // sitting on the horizon (strongest at dawn and sunset, when the
+  // sun is low and the haze colour glows orange).
   const g = ctx.createLinearGradient(0, 0, 0, h);
   g.addColorStop(0, css(light.skyTop));
-  g.addColorStop(0.55, css(light.skyMid));
+  g.addColorStop(0.42, css(light.skyMid));
+  g.addColorStop(0.68, css(light.haze));
   g.addColorStop(1, css(light.skyBot));
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, w, h);
 
-  // Sun disc + glow.
+  // Sun disc + glow: a wide soft halo, a tighter hot glow, then the
+  // disc itself, so the sun reads as light in the air, not a sticker.
   const sunAt = { x: S.cam.pos.x + sunN[0] * 4000, y: S.cam.pos.y + sunN[1] * 4000, z: S.cam.pos.z + sunN[2] * 4000 };
   const sp = project(sunAt);
   if (sp) {
-    const glow = ctx.createRadialGradient(sp.x, sp.y, 4, sp.x, sp.y, 150);
-    glow.addColorStop(0, css(light.sun, 0.9));
-    glow.addColorStop(0.25, css(light.sun, 0.35));
+    const halo = ctx.createRadialGradient(sp.x, sp.y, 20, sp.x, sp.y, 430);
+    halo.addColorStop(0, css(light.sun, 0.28));
+    halo.addColorStop(0.5, css(light.sun, 0.10));
+    halo.addColorStop(1, css(light.sun, 0));
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 430, 0, TAU); ctx.fill();
+    const glow = ctx.createRadialGradient(sp.x, sp.y, 4, sp.x, sp.y, 170);
+    glow.addColorStop(0, css(light.sun, 0.95));
+    glow.addColorStop(0.3, css(light.sun, 0.4));
     glow.addColorStop(1, css(light.sun, 0));
     ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(sp.x, sp.y, 150, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 170, 0, TAU); ctx.fill();
     ctx.fillStyle = css(light.sun);
-    ctx.beginPath(); ctx.arc(sp.x, sp.y, 26, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 24, 0, TAU); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 15, 0, TAU); ctx.fill();
   }
 
   // Draw list: { depth, draw() } — painter's algorithm.
@@ -302,11 +353,17 @@ export function renderScene(S) {
   };
 
   // ---- sea: grid of quads around the camera ----
+  // Finer quads than v1 (400 instead of 800) so the colour grades
+  // smoothly with distance; pale turquoise over the sand shelf near
+  // every shore, a sun-glitter path toward the sun, and a few
+  // deterministic ripple sparkles per quad so the water reads as
+  // moving instead of a painted slab.
   const seaCol = seaColors(light);
-  const seaStep = 800;
+  const seaStep = 400;
   const seaHalf = 3200;
   const sx0 = Math.floor((S.cam.pos.x - seaHalf) / seaStep) * seaStep;
   const sz0 = Math.floor((S.cam.pos.z - seaHalf) / seaStep) * seaStep;
+  const sunAz = Math.atan2(sunN[0], sunN[2]);
   for (let ix = 0; ix < seaHalf * 2 / seaStep; ix++) {
     for (let iz = 0; iz < seaHalf * 2 / seaStep; iz++) {
       const x0 = sx0 + ix * seaStep, z0 = sz0 + iz * seaStep;
@@ -316,9 +373,16 @@ export function renderScene(S) {
       const depth = Math.hypot(cxm, czm);
       if (depth > 4200) continue;
       // Sun glint: quads roughly toward the sun azimuth shimmer.
-      const glint = clamp(1 - Math.abs(Math.atan2(cxm, czm) - Math.atan2(sunN[0], sunN[2])) / 1.2, 0, 1);
+      const glint = clamp(1 - Math.abs(Math.atan2(cxm, czm) - sunAz) / 0.9, 0, 1);
       let c = mixColor(seaCol.near, seaCol.far, clamp(depth / 3000, 0, 1));
-      c = mixColor(c, light.sun, glint * 0.22 * (1 - depth / 4200));
+      c = mixColor(c, seaCol.shallow, seaShallow((x0 + x1) / 2, (z0 + z1) / 2) * 0.6);
+      c = mixColor(c, light.sun, glint * glint * 0.3 * (1 - depth / 4200));
+      // Two ripple sparkles at fixed spots inside the quad.
+      const j1 = cellJitter(ix, iz), j2 = cellJitter(ix + 31, iz + 17);
+      const ripples = [
+        { x: x0 + 60 + j1 * 280, z: z0 + 50 + j2 * 300, len: 14 + j1 * 22, a: 0.10 + j2 * 0.10 },
+        { x: x0 + 40 + j2 * 300, z: z0 + 70 + j1 * 280, len: 10 + j2 * 18, a: 0.07 + j1 * 0.08 },
+      ];
       items.push({
         depth,
         draw() {
@@ -326,6 +390,20 @@ export function renderScene(S) {
             { x: x0, y: 0.5, z: z0 }, { x: x1, y: 0.5, z: z0 },
             { x: x1, y: 0.5, z: z1 }, { x: x0, y: 0.5, z: z1 },
           ], css(fogMix(c, depth)));
+          ctx.strokeStyle = `rgba(255,255,255,${(0.35 + glint * 0.4).toFixed(2)})`;
+          ctx.lineWidth = 1;
+          for (const rp of ripples) {
+            const p = project({ x: rp.x, y: 0.6, z: rp.z });
+            if (!p) continue;
+            const L = rp.len * p.scale * 0.06;
+            if (L < 2 || L > 60) continue;
+            ctx.globalAlpha = rp.a;
+            ctx.beginPath();
+            ctx.moveTo(p.x - L / 2, p.y);
+            ctx.lineTo(p.x + L / 2, p.y);
+            ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
         },
       });
     }
@@ -359,16 +437,149 @@ export function renderScene(S) {
       nx /= nl; ny /= nl; nz /= nl;
       const slope = Math.abs(ny);
       const lambert = 0.62 + 0.38 * clamp((nx * sunN[0] + ny * sunN[1] + nz * sunN[2]) * 0.5 + 0.5, 0, 1);
-      const base = terrainColor((maxH + minH) / 2, slope);
+      // Mottle: a per-cell jitter so the hills read as mottled
+      // vegetation, not one flat green slab.
+      const avgH = (maxH + minH) / 2;
+      const mottle = cellJitter(ix + 7, iz + 3);
+      const ccx = (x0 + x1) / 2, ccz = (z0 + z1) / 2;
+      const base = terrainColor(avgH, slope, mottle, ccx, ccz);
       const col = shade(base, lambert * light.ambient + 0.12);
+      const col2 = shade(base, (lambert * light.ambient + 0.12) * 0.94);
       const pts = [
         { x: x0, y: h00, z: z0 }, { x: x1, y: h10, z: z0 },
         { x: x1, y: h11, z: z1 }, { x: x0, y: h01, z: z1 },
       ];
+      // Tree specks on gentle green slopes, near and mid distance:
+      // a few dark canopy dots per cell, placed deterministically.
+      // No trees on the volcano's lava or bare basalt — the green
+      // grows on the lower slopes, away from the flows.
+      let trees = null;
+      const vol = volcanoAt(ccx, ccz);
+      if (avgH > 8 && avgH < 105 && slope > 0.8 && depth < 1500 && vol.lava < 0.15 && vol.basalt < 0.6 && vol.crater === 0) {
+        trees = [];
+        for (let k = 0; k < 3; k++) {
+          const jx = cellJitter(ix * 3 + k, iz * 5 + 11);
+          const jz = cellJitter(ix * 7 + k + 2, iz * 3 + 5);
+          const tx = x0 + 25 + jx * (cell - 50);
+          const tz = z0 + 25 + jz * (cell - 50);
+          trees.push({ x: tx, y: groundHeight(tx, tz) + 7, z: tz, s: 5 + jx * 5 });
+        }
+      }
       items.push({
         depth,
         draw() {
-          fillPoly(pts, css(fogMix(col, depth)));
+          // Split the quad on its diagonal with a slightly darker
+          // second triangle: a faceted look with real depth, not a
+          // single flat patch.
+          fillPoly([pts[0], pts[1], pts[2]], css(fogMix(col, depth)));
+          fillPoly([pts[0], pts[2], pts[3]], css(fogMix(col2, depth)));
+          if (trees) {
+            for (const tr of trees) {
+              const p = project(tr);
+              if (!p) continue;
+              const r = clamp(tr.s * p.scale * 0.5, 1, 8);
+              if (r < 1) continue;
+              ctx.fillStyle = css(fogMix([38, 88, 52], depth), 0.9);
+              ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
+              ctx.fillStyle = css(fogMix([74, 138, 80], depth), 0.9);
+              ctx.beginPath(); ctx.arc(p.x - r * 0.25, p.y - r * 0.3, r * 0.45, 0, TAU); ctx.fill();
+            }
+          }
+        },
+      });
+    }
+  }
+
+  // ---- lava flows: glowing ribbons down the volcano's flanks ----
+  // Each flow is a strip laid on the terrain surface (sampled from
+  // terrainHeight, so it hugs the slope): a dark crust edge with a
+  // bright molten core that cools from yellow-orange at the vent to
+  // deep red-orange downhill. Fog is kept light on lava so the glow
+  // still reads from far away.
+  const lavaFog = (c, d) => mixColor(c, light.fog, smooth((d - 500) / 2400) * 0.45);
+  for (const az of LAVA_AZIMUTHS) {
+    const dir = [Math.cos(az), Math.sin(az)];
+    const pts = [];
+    for (let r = 120; r <= 720; r += 60) {
+      const px = VOLCANO.x + dir[0] * r, pz = VOLCANO.z + dir[1] * r;
+      pts.push({ x: px, z: pz, y: terrainHeight(px, pz) + 1.4, r });
+    }
+    const mid = pts[Math.floor(pts.length / 2)];
+    const depth = Math.hypot(mid.x - S.cam.pos.x, mid.y - S.cam.pos.y, mid.z - S.cam.pos.z);
+    if (depth > 4200) continue;
+    items.push({
+      depth: depth - 5, // sit just above the terrain they run on
+      draw() {
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i], b = pts[i + 1];
+          const w = 13 + (a.r / 720) * 14; // widens downhill
+          const px = -dir[1], pz = dir[0]; // perpendicular
+          const k = 1 - a.r / 760; // hotter near the vent
+          const crust = [70, 28, 16];
+          const core = mixColor([255, 176, 64], [255, 96, 26], clamp(1 - k, 0, 1));
+          const quad = (half, col) => fillPoly([
+            { x: a.x - px * half, y: a.y + 0.2, z: a.z - pz * half },
+            { x: a.x + px * half, y: a.y + 0.2, z: a.z + pz * half },
+            { x: b.x + px * half, y: b.y + 0.2, z: b.z + pz * half },
+            { x: b.x - px * half, y: b.y + 0.2, z: b.z - pz * half },
+          ], css(lavaFog(col, depth)));
+          quad(w + 7, crust);
+          quad(w * 0.55, core);
+        }
+        // Bloom where the flow leaves the crater.
+        const head = project({ x: pts[0].x, y: pts[0].y + 4, z: pts[0].z });
+        if (head) {
+          const gr = ctx.createRadialGradient(head.x, head.y, 2, head.x, head.y, 90);
+          gr.addColorStop(0, 'rgba(255,150,50,0.55)');
+          gr.addColorStop(1, 'rgba(255,150,50,0)');
+          ctx.fillStyle = gr;
+          ctx.beginPath(); ctx.arc(head.x, head.y, 90, 0, TAU); ctx.fill();
+        }
+      },
+    });
+  }
+
+  // ---- the crater: a glowing bowl + a bloom of light ----
+  // Concentric fans hugging the bowl's surface (sampled from the
+  // terrain, so they sit in the crater instead of floating over it):
+  // a white-hot heart, an orange middle, a dark crust at the rim.
+  // A soft bloom hangs over it, kept subtle so ring 3 — which hangs
+  // just above the crater — still reads gold against it.
+  {
+    const cx = VOLCANO.x, cz = VOLCANO.z;
+    const depth = Math.hypot(cx - S.cam.pos.x, VOLCANO.craterFloor - S.cam.pos.y, cz - S.cam.pos.z);
+    if (depth < 4200) {
+      items.push({
+        depth: depth - 4,
+        draw() {
+          const yAt = (x, z) => terrainHeight(x, z) + 1.6;
+          const rings = [
+            [138, [150, 56, 22]],
+            [88, [255, 150, 48]],
+            [44, [255, 214, 120]],
+          ];
+          for (const [rad, col] of rings) {
+            const SEG = 18;
+            const pts = [];
+            for (let i = 0; i < SEG; i++) {
+              const a = (i / SEG) * TAU;
+              pts.push({ x: cx + Math.cos(a) * rad, y: yAt(cx + Math.cos(a) * rad, cz + Math.sin(a) * rad), z: cz + Math.sin(a) * rad });
+            }
+            const cy = yAt(cx, cz);
+            for (let i = 0; i < SEG; i++) {
+              fillPoly([{ x: cx, y: cy, z: cz }, pts[i], pts[(i + 1) % SEG]], css(col));
+            }
+          }
+          const p = project({ x: cx, y: VOLCANO.craterFloor + 26, z: cz });
+          if (p) {
+            const R = clamp(200 * p.scale, 20, 260);
+            const gr = ctx.createRadialGradient(p.x, p.y, 4, p.x, p.y, R);
+            gr.addColorStop(0, 'rgba(255,140,45,0.32)');
+            gr.addColorStop(0.5, 'rgba(255,110,40,0.12)');
+            gr.addColorStop(1, 'rgba(255,110,40,0)');
+            ctx.fillStyle = gr;
+            ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, TAU); ctx.fill();
+          }
         },
       });
     }
@@ -411,6 +622,17 @@ export function renderScene(S) {
             ], barCol);
           }
         }
+        // Solid edge stripes along both sides, so the strip reads
+        // as a runway from the air instead of a grey slab.
+        const edgeCol = css(fogMix([235, 235, 228], depth));
+        for (const sx of [-1, 1]) {
+          fillPoly([
+            { x: RUNWAY.x + sx * (hw - 3.4), y: y + 0.15, z: RUNWAY.z - hl + 8 },
+            { x: RUNWAY.x + sx * (hw - 1.2), y: y + 0.15, z: RUNWAY.z - hl + 8 },
+            { x: RUNWAY.x + sx * (hw - 1.2), y: y + 0.15, z: RUNWAY.z + hl - 8 },
+            { x: RUNWAY.x + sx * (hw - 3.4), y: y + 0.15, z: RUNWAY.z + hl - 8 },
+          ], edgeCol);
+        }
       },
     });
   }
@@ -451,7 +673,10 @@ export function renderScene(S) {
       depth,
       draw() {
         // Annulus as per-segment quads, so the near plane clips
-        // cleanly when the camera flies through the ring.
+        // cleanly when the camera flies through the ring. Each
+        // segment is shaded by its angle to the sun: the sun side
+        // glows bright, the far side falls into shade, so the ring
+        // reads as a solid torus with depth, not a flat sticker.
         const drawAnnulus = (rOut, rIn, fill) => {
           const outer = ringPts(rOut), inner = ringPts(rIn);
           for (let i = 0; i < SEG; i++) {
@@ -459,7 +684,18 @@ export function renderScene(S) {
           }
         };
         drawAnnulus(ring.r + 5, ring.r - 5, css(glowCol, 0.22));
-        drawAnnulus(ring.r + 2.4, ring.r - 2.4, css(fogMix(coreCol, depth)));
+        const outer = ringPts(ring.r + 2.4), inner = ringPts(ring.r - 2.4);
+        for (let i = 0; i < SEG; i++) {
+          const a = ((i + 0.5) / SEG) * TAU;
+          const dir = [
+            u1[0] * Math.cos(a) + u2[0] * Math.sin(a),
+            u1[1] * Math.cos(a) + u2[1] * Math.sin(a),
+            u1[2] * Math.cos(a) + u2[2] * Math.sin(a),
+          ];
+          const sunSide = clamp(dir[0] * sunN[0] + dir[1] * sunN[1] + dir[2] * sunN[2] * 0.5 + 0.5, 0, 1);
+          const segCol = shade(coreCol, 0.72 + sunSide * 0.55);
+          fillPoly([outer[i], outer[i + 1], inner[i + 1], inner[i]], css(fogMix(segCol, depth)));
+        }
         // Ring number label at the centre.
         const cp = project({ x: ring.x, y: ring.y, z: ring.z });
         if (cp) {
@@ -473,9 +709,33 @@ export function renderScene(S) {
   }
 
   // ---- clouds (soft billboards) ----
+  // Each cloud is a stack of puffs: a shaded belly (cloudBot, the
+  // colour of the sun on the cloud's underside) under bright lit
+  // tops (cloudTop), so clouds have volume instead of reading as
+  // flat white stickers. A soft shadow falls on the ground below.
   for (const cl of CLOUDS) {
     const depth = Math.hypot(cl.x - S.cam.pos.x, cl.y - S.cam.pos.y, cl.z - S.cam.pos.z);
     if (depth > 5200) continue;
+    // Ground shadow: offset away from the sun, capped so low sun
+    // does not throw it to the horizon.
+    const shX = cl.x - clamp(sunN[0] * cl.y * 1.4, -350, 350);
+    const shZ = cl.z - clamp(sunN[2] * cl.y * 1.4, -350, 350);
+    const shDepth = Math.hypot(shX - S.cam.pos.x, shZ - S.cam.pos.z);
+    if (shDepth < 5200) {
+      items.push({
+        depth: shDepth - 1,
+        draw() {
+          const p = project({ x: shX, y: 1, z: shZ });
+          if (!p) return;
+          const s = cl.s * p.scale * 0.95;
+          if (s < 3) return;
+          ctx.fillStyle = `rgba(10,30,50,${clamp(0.10 - depth / 60000, 0.04, 0.10).toFixed(2)})`;
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, s * 0.9, s * 0.30, 0, 0, TAU);
+          ctx.fill();
+        },
+      });
+    }
     items.push({
       depth,
       draw() {
@@ -484,12 +744,108 @@ export function renderScene(S) {
         const s = cl.s * p.scale;
         if (s < 4) return;
         const alpha = clamp(0.85 - depth / 6000, 0.25, 0.85);
-        ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(2)})`;
-        for (const [ox, oy, k] of [[-0.5, 0.08, 0.62], [0, -0.12, 0.78], [0.5, 0.06, 0.6], [0.15, 0.16, 0.5]]) {
+        // Shaded belly first (wider, lower), then lit tops.
+        ctx.fillStyle = css(light.cloudBot, alpha * 0.85);
+        for (const [ox, oy, k] of [[-0.42, 0.16, 0.66], [0.08, 0.2, 0.72], [0.52, 0.14, 0.58]]) {
           ctx.beginPath();
           ctx.ellipse(p.x + ox * s, p.y + oy * s, s * k, s * k * 0.42, 0, 0, TAU);
           ctx.fill();
         }
+        ctx.fillStyle = css(light.cloudTop, alpha);
+        for (const [ox, oy, k] of [[-0.5, 0.02, 0.6], [0, -0.16, 0.78], [0.5, 0.0, 0.58], [0.15, 0.1, 0.5]]) {
+          ctx.beginPath();
+          ctx.ellipse(p.x + ox * s, p.y + oy * s, s * k, s * k * 0.42, 0, 0, TAU);
+          ctx.fill();
+        }
+        // Bright sun-kissed rim on the side facing the sun.
+        const rimX = sunN[0] > 0 ? 1 : -1;
+        ctx.fillStyle = css(light.sun, alpha * 0.55);
+        ctx.beginPath();
+        ctx.ellipse(p.x + rimX * s * 0.28, p.y - s * 0.14, s * 0.34, s * 0.13, 0, 0, TAU);
+        ctx.fill();
+      },
+    });
+  }
+
+  // ---- volcano smoke: a wind-leaning column over the crater ----
+  // Six puffs stacked from the crater rim, leaning east on the wind
+  // and growing as they rise — the lowest catches orange light from
+  // the lava below, the higher ones are plain grey. The lean keeps
+  // the column off ring 3, which hangs right above the crater: the
+  // smoke is dramatic, but it never sits on the flight path.
+  {
+    const puffs = [
+      { dx: 120, dy: 50, s: 120, a: 0.45 },
+      { dx: 230, dy: 140, s: 170, a: 0.52 },
+      { dx: 360, dy: 240, s: 230, a: 0.6 },
+      { dx: 500, dy: 340, s: 300, a: 0.58 },
+      { dx: 660, dy: 440, s: 370, a: 0.55 },
+      { dx: 840, dy: 540, s: 440, a: 0.52 },
+    ];
+    for (const pf of puffs) {
+      const px = VOLCANO.x + pf.dx, py = VOLCANO.craterFloor + pf.dy, pz = VOLCANO.z + 20;
+      const depth = Math.hypot(px - S.cam.pos.x, py - S.cam.pos.y, pz - S.cam.pos.z);
+      if (depth > 5200) continue;
+      items.push({
+        depth,
+        draw() {
+          const p = project({ x: px, y: py, z: pz });
+          if (!p) return;
+          const s = pf.s * p.scale;
+          if (s < 4) return;
+          const belly = pf.dy < 150 ? [96, 62, 48] : [74, 70, 66];
+          const top = pf.dy < 150 ? [150, 104, 82] : [148, 140, 130];
+          ctx.fillStyle = css(belly, pf.a * 0.9);
+          for (const [ox, oy, k] of [[-0.4, 0.18, 0.62], [0.1, 0.22, 0.7], [0.5, 0.14, 0.55]]) {
+            ctx.beginPath();
+            ctx.ellipse(p.x + ox * s, p.y + oy * s, s * k, s * k * 0.45, 0, 0, TAU);
+            ctx.fill();
+          }
+          ctx.fillStyle = css(top, pf.a);
+          for (const [ox, oy, k] of [[-0.45, 0.0, 0.58], [0, -0.16, 0.76], [0.48, -0.02, 0.56], [0.12, 0.08, 0.5]]) {
+            ctx.beginPath();
+            ctx.ellipse(p.x + ox * s, p.y + oy * s, s * k, s * k * 0.45, 0, 0, TAU);
+            ctx.fill();
+          }
+        },
+      });
+    }
+    // Smoky haze hanging in the sky above the volcano.
+    const hz = { x: VOLCANO.x + 260, y: VOLCANO.craterFloor + 330, z: VOLCANO.z };
+    const hzDepth = Math.hypot(hz.x - S.cam.pos.x, hz.y - S.cam.pos.y, hz.z - S.cam.pos.z);
+    if (hzDepth < 5200) {
+      items.push({
+        depth: hzDepth,
+        draw() {
+          const p = project(hz);
+          if (!p) return;
+          const R = clamp(620 * p.scale, 40, 900);
+          const gr = ctx.createRadialGradient(p.x, p.y, 10, p.x, p.y, R);
+          gr.addColorStop(0, 'rgba(96,80,66,0.16)');
+          gr.addColorStop(1, 'rgba(96,80,66,0)');
+          ctx.fillStyle = gr;
+          ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, TAU); ctx.fill();
+        },
+      });
+    }
+  }
+
+  // ---- volcanic ash: dark specks drifting around the crater ----
+  for (let i = 0; i < 36; i++) {
+    const jx = cellJitter(i * 13 + 5, 41), jz = cellJitter(i * 7 + 2, 83);
+    const ax = VOLCANO.x + (jx - 0.5) * 900;
+    const az = VOLCANO.z + (jz - 0.5) * 900;
+    const ay = 260 + cellJitter(i * 3, 17) * 380;
+    const depth = Math.hypot(ax - S.cam.pos.x, ay - S.cam.pos.y, az - S.cam.pos.z);
+    if (depth > 4000) continue;
+    items.push({
+      depth,
+      draw() {
+        const p = project({ x: ax, y: ay, z: az });
+        if (!p) return;
+        const r = clamp(2.2 * p.scale * 0.5, 0.8, 3.5);
+        ctx.fillStyle = 'rgba(40,34,30,0.75)';
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
       },
     });
   }
@@ -510,12 +866,38 @@ export function renderScene(S) {
       obj.pos.y - S.cam.pos.y,
       obj.pos.z - S.cam.pos.z
     );
+    // Soft shadow on the ground below (fades with altitude): it
+    // grounds the plane in the air and sells how high it is.
+    {
+      const gy = groundHeight(obj.pos.x, obj.pos.z);
+      const alt = obj.pos.y - gy;
+      if (alt < 260) {
+        const gx = obj.pos.x, gz = obj.pos.z;
+        const gdepth = Math.hypot(gx - S.cam.pos.x, gy - S.cam.pos.y, gz - S.cam.pos.z);
+        items.push({
+          depth: gdepth - 1,
+          draw() {
+            const p = project({ x: gx, y: gy + 0.8, z: gz });
+            if (!p) return;
+            const s = 9 * p.scale;
+            if (s < 2) return;
+            ctx.fillStyle = `rgba(8,20,30,${(0.30 * (1 - alt / 260)).toFixed(2)})`;
+            ctx.beginPath();
+            ctx.ellipse(p.x, p.y, s, s * 0.45, 0, 0, TAU);
+            ctx.fill();
+          },
+        });
+      }
+    }
     items.push({
       depth: pdepth,
       draw() {
         for (const tri of tris) {
           const w0 = toWorld(tri.v[0]), w1 = toWorld(tri.v[1]), w2 = toWorld(tri.v[2]);
-          // Flat shading from the face normal vs the sun.
+          // Flat shading from the face normal vs the sun, plus a
+          // specular glint where the sun catches the skin (strongest
+          // on the canopy glass): the plane stops reading as a flat
+          // toy and starts reading as painted metal.
           let col = tri.c;
           if (!tri.glow) {
             const e1 = [w1.x - w0.x, w1.y - w0.y, w1.z - w0.z];
@@ -524,10 +906,34 @@ export function renderScene(S) {
             let ny = e1[2] * e2[0] - e1[0] * e2[2];
             let nz = e1[0] * e2[1] - e1[1] * e2[0];
             const nl = Math.hypot(nx, ny, nz) || 1;
-            const lam = 0.6 + 0.4 * clamp((nx * sunN[0] + ny * sunN[1] + nz * sunN[2]) / nl * 0.5 + 0.5, 0, 1);
+            const ndotl = clamp((nx * sunN[0] + ny * sunN[1] + nz * sunN[2]) / nl * 0.5 + 0.5, 0, 1);
+            const lam = 0.6 + 0.4 * ndotl;
             col = shade(tri.c, lam * light.ambient + 0.15);
+            const cx = (w0.x + w1.x + w2.x) / 3;
+            const cy = (w0.y + w1.y + w2.y) / 3;
+            const cz = (w0.z + w1.z + w2.z) / 3;
+            let vx = S.cam.pos.x - cx, vy = S.cam.pos.y - cy, vz = S.cam.pos.z - cz;
+            const vl = Math.hypot(vx, vy, vz) || 1;
+            vx /= vl; vy /= vl; vz /= vl;
+            const hx = sunN[0] + vx, hy = sunN[1] + vy, hz = sunN[2] + vz;
+            const hl = Math.hypot(hx, hy, hz) || 1;
+            const ndoth = clamp((nx * hx + ny * hy + nz * hz) / (nl * hl), 0, 1);
+            const spec = Math.pow(ndoth, 24) * 0.5 * (tri.spec || 1);
+            if (spec > 0.02) col = mixColor(col, [255, 255, 255], clamp(spec, 0, 0.55));
           }
           fillPoly([w0, w1, w2], css(col));
+        }
+        // Spinning prop blur: a translucent disc where the blades
+        // sweep, so the prop reads as motion instead of two sticks.
+        const pc = toWorld([0, 0, 7.35]);
+        const pp = project(pc);
+        if (pp) {
+          const pr = clamp(2.7 * pp.scale, 2, 90);
+          ctx.fillStyle = 'rgba(30,34,42,0.16)';
+          ctx.beginPath(); ctx.arc(pp.x, pp.y, pr, 0, TAU); ctx.fill();
+          ctx.strokeStyle = 'rgba(30,34,42,0.25)';
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(pp.x, pp.y, pr, 0, TAU); ctx.stroke();
         }
       },
     });
@@ -620,7 +1026,7 @@ export function updateCamera(cam, plane, view, dt) {
     };
     tyaw = plane.yaw; tpitch = plane.pitch; troll = plane.roll;
   } else {
-    const back = 40, up = 13;
+    const back = 44, up = 10;
     target = {
       x: plane.pos.x - f[0] * back + u[0] * up,
       y: plane.pos.y - f[1] * back + u[1] * up,
